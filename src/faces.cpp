@@ -27,36 +27,36 @@ static float Iou(const Candidate& a, const Candidate& b) {
     return float(inter / (double(a.w) * a.h + double(b.w) * b.h - inter));
 }
 
-// The network wants a square: the picture in its top-left corner, grey elsewhere, as planar RGB in [0, 1].
-std::vector<float> Letterbox(const RgbImage& img, int edge, double& scale) {
+// The network wants a square: the picture in its top-left corner and grey everywhere else.
+RgbImage Letterbox(const RgbImage& img, int edge, double& scale) {
     scale = double(edge) / std::max(img.Rows(), img.Cols());
     const int nh = ScaledSize(img.Rows(), scale);
     const int nw = ScaledSize(img.Cols(), scale);
-    const std::size_t area = std::size_t(edge) * edge;
-    std::vector<float> blob(3 * area, float(PADDING / 255.0));
-    const Plane* planes[3] = {&img.r, &img.g, &img.b};
+    const double grey = PADDING / 255.0;
+    RgbImage canvas{Plane(edge, edge, grey), Plane(edge, edge, grey), Plane(edge, edge, grey)};
+    const Plane* from[3] = {&img.r, &img.g, &img.b};
+    Plane* to[3] = {&canvas.r, &canvas.g, &canvas.b};
     for (int c = 0; c < 3; ++c) {
-        Plane levels = *planes[c];
+        Plane levels = *from[c];
         for (double& x : levels.v) x = ToLevel(x);
         // Centre-aligned like OpenCV's resize, which is how YOLOv8 letterboxes its input.
         const Plane shrunk = ResizeLinear(levels, nh, nw, Align::Centres);
         for (int y = 0; y < nh; ++y)
-            for (int x = 0; x < nw; ++x)
-                blob[c * area + std::size_t(y) * edge + x] = float(RoundHalfEven(shrunk.At(y, x)) / 255.0);
+            for (int x = 0; x < nw; ++x) to[c]->At(y, x) = RoundHalfEven(shrunk.At(y, x)) / 255.0;
     }
-    return blob;
+    return canvas;
 }
 
-// The output is (5, count): centre x, centre y, width, height and confidence, in letterboxed pixels.
-std::vector<FaceBox> DecodeDetections(const float* output, int count, double scale) {
+// One column per candidate: centre x, centre y, width, height and confidence, in letterboxed pixels.
+std::vector<FaceBox> DecodeDetections(const Plane& output, double scale) {
     const float s = float(scale);
     std::vector<Candidate> found;
-    for (int i = 0; i < count; ++i) {
-        const float score = output[4 * count + i];
+    for (int i = 0; i < output.cols; ++i) {
+        const float score = float(output.At(4, i));
         if (score <= MIN_CONFIDENCE) continue;
-        const float w = output[2 * count + i] / s;
-        const float h = output[3 * count + i] / s;
-        found.push_back({output[i] / s - w / 2, output[count + i] / s - h / 2, w, h, score});
+        const float x = float(output.At(0, i)) / s, y = float(output.At(1, i)) / s;
+        const float w = float(output.At(2, i)) / s, h = float(output.At(3, i)) / s;
+        found.push_back({x - w / 2, y - h / 2, w, h, score});
     }
     std::stable_sort(found.begin(), found.end(),
                      [](const Candidate& a, const Candidate& b) { return a.score > b.score; });
@@ -102,21 +102,26 @@ FaceDetector::FaceDetector(const std::wstring& modelPath) {
 
 FaceDetector::~FaceDetector() = default;
 
-bool FaceDetector::Infer(const std::vector<float>& input, std::vector<float>& output) {
+bool FaceDetector::Infer(const RgbImage& input, Plane& output) {
     if (!session_) return false;
-    if (input.size() != 3 * std::size_t(NETWORK_EDGE) * NETWORK_EDGE) {
+    if (input.Rows() != NETWORK_EDGE || input.Cols() != NETWORK_EDGE) {
         status_ = FaceStatus::DetectFailed;
         detail_ = "input is not a 640x640 letterbox";
         return false;
     }
     status_ = FaceStatus::Ready;
     detail_.clear();
+
+    // A tensor is one flat block, channel-major (NCHW): all of red row by row, then all of green, then blue.
+    std::vector<float> flat;
+    flat.reserve(3 * input.r.Size());
+    for (const Plane* p : {&input.r, &input.g, &input.b})
+        for (double x : p->v) flat.push_back(float(x));
+
     try {
         const int64_t shape[4] = {1, 3, NETWORK_EDGE, NETWORK_EDGE};
         const Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-        // The tensor wrapper takes a non-const pointer, but an input tensor is only ever read.
-        Ort::Value tensor = Ort::Value::CreateTensor<float>(memory, const_cast<float*>(input.data()),
-                                                            input.size(), shape, 4);
+        Ort::Value tensor = Ort::Value::CreateTensor<float>(memory, flat.data(), flat.size(), shape, 4);
         const char* inputs[1] = {session_->inputName.c_str()};
         const char* outputs[1] = {session_->outputName.c_str()};
         std::vector<Ort::Value> result =
@@ -128,8 +133,10 @@ bool FaceDetector::Infer(const std::vector<float>& input, std::vector<float>& ou
             detail_ = "unexpected output shape";
             return false;
         }
+        // The (1, 5, count) tensor is stored row by row, the same order as a 5 x count Plane.
         const float* data = result[0].GetTensorData<float>();
-        output.assign(data, data + dims[1] * dims[2]);
+        output = Plane(5, int(dims[2]));
+        for (std::size_t i = 0; i < output.Size(); ++i) output.v[i] = data[i];
         return true;
     } catch (const std::exception& e) {
         status_ = FaceStatus::DetectFailed;
@@ -140,8 +147,8 @@ bool FaceDetector::Infer(const std::vector<float>& input, std::vector<float>& ou
 
 std::vector<FaceBox> FaceDetector::Detect(const RgbImage& img) {
     double scale = 1.0;
-    const std::vector<float> input = Letterbox(img, NETWORK_EDGE, scale);
-    std::vector<float> output;
+    const RgbImage input = Letterbox(img, NETWORK_EDGE, scale);
+    Plane output;
     if (!Infer(input, output)) return {};
-    return DecodeDetections(output.data(), int(output.size() / 5), scale);
+    return DecodeDetections(output, scale);
 }

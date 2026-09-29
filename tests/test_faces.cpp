@@ -1,4 +1,3 @@
-#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <vector>
@@ -7,17 +6,13 @@
 #include "faces.h"
 #include "image_io.h"
 
-// One network output with room for `count` detections, all below the confidence threshold.
-static std::vector<float> EmptyOutput(int count) {
-    return std::vector<float>(5 * std::size_t(count), 0.0f);
-}
-
-static void Put(std::vector<float>& out, int count, int i, float cx, float cy, float w, float h, float score) {
-    out[i] = cx;
-    out[count + i] = cy;
-    out[2 * count + i] = w;
-    out[3 * count + i] = h;
-    out[4 * count + i] = score;
+// Fills candidate i of a network output: centre, size and confidence.
+static void Put(Plane& out, int i, double cx, double cy, double w, double h, double score) {
+    out.At(0, i) = cx;
+    out.At(1, i) = cy;
+    out.At(2, i) = w;
+    out.At(3, i) = h;
+    out.At(4, i) = score;
 }
 
 int main() {
@@ -27,26 +22,23 @@ int main() {
     // A wide picture: it fills the top of the square, and the padding below stays grey.
     RgbImage wide{Plane(20, 40, 1.0), Plane(20, 40, 0.0), Plane(20, 40, 0.5)};
     double scale = 0.0;
-    const std::vector<float> blob = Letterbox(wide, 16, scale);
-    const std::size_t area = 16 * 16;
+    const RgbImage canvas = Letterbox(wide, 16, scale);
     ck.Close("scale fits the long edge", scale, 16.0 / 40.0, 0.0);
-    ck.Require("planar, three channels", blob.size() == 3 * area);
-    ck.Close("red comes first", blob[0], 1.0, 0.0);
-    ck.Close("then green", blob[area], 0.0, 0.0);
-    ck.Close("then blue, rounded to a byte", blob[2 * area], 128.0 / 255.0, 1e-7);
-    ck.Close("the picture ends at row 8", blob[7 * 16 + 15], 1.0, 0.0);
-    ck.Close("and grey padding starts there", blob[8 * 16], 114.0 / 255.0, 1e-7);
+    ck.Require("the canvas is square", canvas.Rows() == 16 && canvas.Cols() == 16);
+    ck.Close("red carries over", canvas.r.At(0, 0), 1.0, 0.0);
+    ck.Close("green carries over", canvas.g.At(0, 0), 0.0, 0.0);
+    ck.Close("blue is rounded to a byte", canvas.b.At(0, 0), 128.0 / 255.0, 1e-15);
+    ck.Close("the picture ends at row 8", canvas.r.At(7, 15), 1.0, 0.0);
+    ck.Close("and grey padding starts there", canvas.r.At(8, 0), 114.0 / 255.0, 1e-15);
 
-    const int count = 4;
-    std::vector<float> none = EmptyOutput(count);
-    ck.Require("nothing above the threshold, no faces", DecodeDetections(none.data(), count, 1.0).empty());
+    ck.Require("nothing above the threshold, no faces", DecodeDetections(Plane(5, 4), 1.0).empty());
 
-    std::vector<float> out = EmptyOutput(count);
-    Put(out, count, 0, 100.0f, 100.0f, 40.0f, 60.0f, 0.9f);
-    Put(out, count, 1, 104.0f, 102.0f, 40.0f, 60.0f, 0.8f);
-    Put(out, count, 2, 300.0f, 100.0f, 40.0f, 40.0f, 0.6f);
-    Put(out, count, 3, 500.0f, 500.0f, 40.0f, 40.0f, 0.2f);
-    const std::vector<FaceBox> faces = DecodeDetections(out.data(), count, 0.5);
+    Plane out(5, 4);
+    Put(out, 0, 100.0, 100.0, 40.0, 60.0, 0.9);
+    Put(out, 1, 104.0, 102.0, 40.0, 60.0, 0.8);
+    Put(out, 2, 300.0, 100.0, 40.0, 40.0, 0.6);
+    Put(out, 3, 500.0, 500.0, 40.0, 40.0, 0.2);
+    const std::vector<FaceBox> faces = DecodeDetections(out, 0.5);
     ck.Require("an overlapping duplicate and a weak box are dropped", faces.size() == 2);
     if (faces.size() == 2) {
         ck.Require("the strongest comes first", faces[0].x == 160 && faces[0].y == 140);
@@ -54,9 +46,9 @@ int main() {
         ck.Require("a separate face survives", faces[1].x == 560 && faces[1].w == 80);
     }
 
-    std::vector<float> edge = EmptyOutput(1);
-    Put(edge, 1, 0, 5.0f, 5.0f, 20.0f, 20.0f, 0.9f);
-    const std::vector<FaceBox> cut = DecodeDetections(edge.data(), 1, 1.0);
+    Plane edge(5, 1);
+    Put(edge, 0, 5.0, 5.0, 20.0, 20.0, 0.9);
+    const std::vector<FaceBox> cut = DecodeDetections(edge, 1.0);
     ck.Require("a box over the top-left edge keeps its negative corner", cut.size() == 1 && cut[0].x == -5);
 
     const std::filesystem::path missing = std::filesystem::temp_directory_path() / L"gazeprobe_no_model.onnx";

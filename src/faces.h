@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+struct Plane;
 struct RgbImage;
 
 // A face in pixels of the analysed image: top-left corner and size.
@@ -16,8 +17,8 @@ struct FaceBox {
 
 enum class FaceStatus { Ready, ModelMissing, LoadFailed, DetectFailed };
 
-std::vector<float> Letterbox(const RgbImage& img, int edge, double& scale);
-std::vector<FaceBox> DecodeDetections(const float* output, int count, double scale);
+RgbImage Letterbox(const RgbImage& img, int edge, double& scale);
+std::vector<FaceBox> DecodeDetections(const Plane& output, double scale);
 
 // Runs a YOLOv8 face detector through ONNX Runtime; without a model it reports why and finds nothing.
 class FaceDetector {
@@ -30,7 +31,7 @@ public:
     FaceStatus Status() const { return status_; }
     const std::string& Detail() const { return detail_; }
 
-    bool Infer(const std::vector<float>& input, std::vector<float>& output);
+    bool Infer(const RgbImage& input, Plane& output);
     std::vector<FaceBox> Detect(const RgbImage& img);
 
 private:
