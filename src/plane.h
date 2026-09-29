@@ -15,7 +15,6 @@ struct Plane {
 
     std::size_t Size() const { return v.size(); }
     bool Empty() const { return v.empty(); }
-    bool SameShape(const Plane& o) const { return rows == o.rows && cols == o.cols; }
 
     double& At(int r, int c) {
         assert(r >= 0 && r < rows && c >= 0 && c < cols);

@@ -4,18 +4,16 @@
 #include <cmath>
 #include <vector>
 
+#include "pixel_utils.h"
+
 // Wider Gaussians run on a shrunk copy, which is off by a few percent at worst but far cheaper.
 static const double MAX_DIRECT_SIGMA = 4.0;
 
 static const double WINDOW_FRACTION = 0.02;
 static const int MIN_WINDOW = 3;
 
-static int RoundHalfEven(double x) {
-    return int(std::nearbyint(x));
-}
-
 static int BorderIndex(int i, int n, Border border) {
-    if (border == Border::Nearest) return i < 0 ? 0 : (i >= n ? n - 1 : i);
+    if (border == Border::Nearest) return std::clamp(i, 0, n - 1);
     if (n == 1) return 0;
     // Reflect repeats the edge sample: d c b a | a b c d | d c b a
     const int period = 2 * n;
@@ -26,7 +24,7 @@ static int BorderIndex(int i, int n, Border border) {
 
 // Correlates every line along one axis with the kernel; its first tap sits `left` samples before the output.
 static Plane FilterAxis(const Plane& in, int axis, const std::vector<double>& kernel, int left,
-                         Border border) {
+                        Border border) {
     Plane out(in.rows, in.cols);
     const int n = axis == 0 ? in.rows : in.cols;
     const int lines = axis == 0 ? in.cols : in.rows;
@@ -49,15 +47,18 @@ static Plane FilterAxis(const Plane& in, int axis, const std::vector<double>& ke
     return out;
 }
 
-static Plane ResizeAxis(const Plane& in, int axis, int nOut) {
+static Plane ResizeAxis(const Plane& in, int axis, int nOut, Align align) {
     const int nIn = axis == 0 ? in.rows : in.cols;
     Plane out(axis == 0 ? nOut : in.rows, axis == 0 ? in.cols : nOut);
-    // Output samples span the input end to end, so the first and last pixels line up exactly.
-    const double step = nOut > 1 ? double(nIn - 1) / double(nOut - 1) : 1.0;
+    const double cornerStep = nOut > 1 ? double(nIn - 1) / double(nOut - 1) : 1.0;
+    const double centreStep = double(nIn) / nOut;
     const int lines = axis == 0 ? in.cols : in.rows;
 
     for (int j = 0; j < nOut; ++j) {
-        const double coord = j * step;
+        // Corners: first and last samples coincide. Centres: pixel j's centre, j + 0.5, maps to the input's.
+        const double coord = align == Align::Corners
+                                 ? j * cornerStep
+                                 : std::clamp((j + 0.5) * centreStep - 0.5, 0.0, double(nIn - 1));
         const int i0 = std::min(int(std::floor(coord)), nIn - 1);
         const int i1 = std::min(i0 + 1, nIn - 1);
         const double t = coord - i0;
@@ -100,8 +101,8 @@ Plane GaussianFilter(const Plane& in, double sigma, Border border) {
     return FilterAxis(FilterAxis(in, 0, kernel, radius, border), 1, kernel, radius, border);
 }
 
-Plane ResizeLinear(const Plane& in, int rows, int cols) {
-    return ResizeAxis(ResizeAxis(in, 0, rows), 1, cols);
+Plane ResizeLinear(const Plane& in, int rows, int cols, Align align) {
+    return ResizeAxis(ResizeAxis(in, 0, rows, align), 1, cols, align);
 }
 
 Plane Blur(const Plane& in, double sigma) {
@@ -111,9 +112,10 @@ Plane Blur(const Plane& in, double sigma) {
     // A box pass first, or fine detail aliases into the shrunk copy.
     const int box = std::max(2, RoundHalfEven(1.0 / scale));
     const Plane filtered = BoxFilter(in, box, Border::Nearest);
-    const Plane shrunk = ResizeLinear(filtered, RoundHalfEven(in.rows * scale),
-                                       RoundHalfEven(in.cols * scale));
-    return ResizeLinear(GaussianFilter(shrunk, MAX_DIRECT_SIGMA, Border::Nearest), in.rows, in.cols);
+    const Plane shrunk =
+        ResizeLinear(filtered, ScaledSize(in.rows, scale), ScaledSize(in.cols, scale), Align::Corners);
+    return ResizeLinear(GaussianFilter(shrunk, MAX_DIRECT_SIGMA, Border::Nearest), in.rows, in.cols,
+                        Align::Corners);
 }
 
 // Standard deviation as sqrt(E[x^2] - E[x]^2), which leaves ~1e-8 rather than 0 on flat regions.
@@ -127,8 +129,4 @@ Plane LocalStd(const Plane& in, int size) {
     for (std::size_t i = 0; i < out.Size(); ++i)
         out.v[i] = std::sqrt(std::max(meanSq.v[i] - mean.v[i] * mean.v[i], 0.0));
     return out;
-}
-
-Plane ContrastMap(const Plane& L) {
-    return LocalStd(L, WindowSize(L.rows, L.cols));
 }

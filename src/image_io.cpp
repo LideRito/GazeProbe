@@ -6,8 +6,9 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 
+#include "pixel_utils.h"
+
 #include <algorithm>
-#include <cmath>
 #include <cstdio>
 #include <vector>
 
@@ -19,10 +20,6 @@ static std::string Failure(const char* what, HRESULT hr) {
     return text;
 }
 
-static BYTE ToByte(double x) {
-    return BYTE(std::nearbyint(std::clamp(x, 0.0, 1.0) * 255.0));
-}
-
 // Straight (not premultiplied) alpha, composited over a white background.
 static double OverWhite(BYTE colour, BYTE alpha) {
     const double a = alpha / 255.0;
@@ -31,7 +28,7 @@ static double OverWhite(BYTE colour, BYTE alpha) {
 
 static void FlattenBgra(std::vector<BYTE>& px) {
     for (std::size_t i = 0; i < px.size(); i += 4) {
-        for (std::size_t c = 0; c < 3; ++c) px[i + c] = ToByte(OverWhite(px[i + c], px[i + 3]));
+        for (int c = 0; c < 3; ++c) px[i + c] = BYTE(ToLevel(OverWhite(px[i + c], px[i + 3])));
         px[i + 3] = 255;
     }
 }
@@ -106,8 +103,8 @@ bool ImageCodec::Load(const std::wstring& path, int longEdge, RgbImage& out, std
                                               UINT(w) * 4, UINT(px.size()), px.data(), &bitmap);
         if (FAILED(hr)) return fail("wrapping the pixels");
 
-        const int nw = std::max(1, int(std::nearbyint(w * scale)));
-        const int nh = std::max(1, int(std::nearbyint(h * scale)));
+        const int nw = ScaledSize(w, scale);
+        const int nh = ScaledSize(h, scale);
         ComPtr<IWICBitmapScaler> scaler;
         if (FAILED(hr = factory_->CreateBitmapScaler(&scaler))) return fail("creating a scaler");
         hr = scaler->Initialize(bitmap.Get(), UINT(nw), UINT(nh), WICBitmapInterpolationModeHighQualityCubic);
@@ -127,9 +124,9 @@ bool ImageCodec::SavePng(const std::wstring& path, const RgbImage& img, std::str
     const int w = img.Cols(), h = img.Rows();
     std::vector<BYTE> px(std::size_t(w) * h * 3);
     for (std::size_t i = 0; i < img.r.Size(); ++i) {
-        px[i * 3 + 0] = ToByte(img.b.v[i]);
-        px[i * 3 + 1] = ToByte(img.g.v[i]);
-        px[i * 3 + 2] = ToByte(img.r.v[i]);
+        px[i * 3 + 0] = BYTE(ToLevel(img.b.v[i]));
+        px[i * 3 + 1] = BYTE(ToLevel(img.g.v[i]));
+        px[i * 3 + 2] = BYTE(ToLevel(img.r.v[i]));
     }
 
     HRESULT hr = S_OK;

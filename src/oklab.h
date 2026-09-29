@@ -11,9 +11,7 @@ struct PreparedImage {
 };
 
 double SrgbToLinear(double x);
-double LinearToSrgb(double x);
 
 void SrgbToOklab(double r, double g, double b, double& outL, double& outA, double& outB);
-void OklabToSrgb(double L, double a, double b, double& outR, double& outG, double& outB);
 
 PreparedImage ToOklab(const Plane& r, const Plane& g, const Plane& b);

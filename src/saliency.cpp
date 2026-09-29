@@ -6,10 +6,10 @@
 
 #include "filters.h"
 
-static const char* const CHANNEL_NAMES[ChannelCount] = {"contrast", "colour", "chroma", "centre"};
+static const char* const CHANNEL_NAMES[ChannelCount] = {"contrast", "colour", "chroma", "face", "centre"};
 
 // A guess rather than a fit: nobody has eye-tracked these pictures.
-static const double DEFAULT_WEIGHTS[ChannelCount] = {1.0, 0.7, 0.4, 0.3};
+static const double DEFAULT_WEIGHTS[ChannelCount] = {1.0, 0.7, 0.4, 1.2, 0.3};
 
 static const double SURROUND = 0.06;
 static const double CENTRE_SIGMA = 0.28;
@@ -60,7 +60,7 @@ static void Normalise(Plane& p) {
 
 // 4-connected components, numbered from 1 in the raster order of their first pixel.
 static int LabelComponents(const std::vector<char>& mask, int rows, int cols,
-                            std::vector<int>& labels) {
+                           std::vector<int>& labels) {
     labels.assign(mask.size(), 0);
     std::vector<int> stack;
     int count = 0;
@@ -97,7 +97,7 @@ const char* ChannelName(Channel c) {
 }
 
 Plane ContrastChannel(const PreparedImage& img) {
-    return ContrastMap(img.L);
+    return LocalStd(img.L, WindowSize(img.Rows(), img.Cols()));
 }
 
 // How far each pixel's colour sits from the average colour of its surroundings.
@@ -114,6 +114,23 @@ Plane ColourChannel(const PreparedImage& img) {
 Plane ChromaChannel(const PreparedImage& img) {
     Plane out(img.Rows(), img.Cols());
     for (std::size_t i = 0; i < out.Size(); ++i) out.v[i] = std::hypot(img.a.v[i], img.b.v[i]);
+    return out;
+}
+
+// A Gaussian as wide as each box; where faces overlap the larger value wins, so the channel stays in [0, 1].
+Plane FaceChannel(const std::vector<FaceBox>& faces, int rows, int cols) {
+    Plane out(rows, cols);
+    for (const FaceBox& f : faces) {
+        const double sx = std::max(f.w, 1) / 2.0, sy = std::max(f.h, 1) / 2.0;
+        const double cx = f.x + sx, cy = f.y + sy;
+        for (int r = 0; r < rows; ++r) {
+            const double dy = (r - cy) / sy;
+            for (int c = 0; c < cols; ++c) {
+                const double dx = (c - cx) / sx;
+                out.At(r, c) = std::max(out.At(r, c), std::exp(-0.5 * (dx * dx + dy * dy)));
+            }
+        }
+    }
     return out;
 }
 
@@ -164,9 +181,8 @@ std::vector<char> TopRegion(const Plane& total) {
     return top;
 }
 
-FixationPoint FindFixation(const Plane& total) {
+FixationPoint FindFixation(const Plane& total, const std::vector<char>& top) {
     FixationPoint f;
-    const std::vector<char> top = TopRegion(total);
     if (std::find(top.begin(), top.end(), char(1)) == top.end()) return f;
 
     // One peak, not the average of all of them: two faces would centroid into the gap between.
@@ -197,10 +213,11 @@ SaliencyModel::SaliencyModel() {
     for (int c = 0; c < ChannelCount; ++c) weights_[c] = DEFAULT_WEIGHTS[c];
 }
 
-void SaliencyModel::SetImage(const PreparedImage& img) {
+void SaliencyModel::SetImage(const PreparedImage& img, const std::vector<FaceBox>& faces) {
     channels_[Contrast] = Stretch(ContrastChannel(img));
     channels_[Colour] = Stretch(ColourChannel(img));
     channels_[Chroma] = Stretch(ChromaChannel(img));
+    channels_[Face] = FaceChannel(faces, img.Rows(), img.Cols());
     channels_[Centre] = Stretch(CentreChannel(img.Rows(), img.Cols()));
     Combine();
 }
@@ -217,17 +234,17 @@ void SaliencyModel::Combine() {
         for (std::size_t i = 0; i < total_.Size(); ++i) total_.v[i] += w * channels_[c].v[i];
     }
     Normalise(total_);
-    fixation_ = FindFixation(total_);
+    top_ = TopRegion(total_);
+    fixation_ = FindFixation(total_, top_);
 
     // The sum is linear, so each channel's part of it can be read off exactly.
-    const std::vector<char> top = TopRegion(total_);
     double whole[ChannelCount] = {}, inTop[ChannelCount] = {};
     for (int c = 0; c < ChannelCount; ++c) {
         const double w = std::max(0.0, weights_[c]);
         for (std::size_t i = 0; i < total_.Size(); ++i) {
             const double part = w * channels_[c].v[i];
             whole[c] += part;
-            if (top[i]) inTop[c] += part;
+            if (top_[i]) inTop[c] += part;
         }
     }
     ToShares(whole, shares_);

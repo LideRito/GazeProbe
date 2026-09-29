@@ -52,13 +52,24 @@ int main() {
     // Linear interpolation is exact on a linear ramp, in both directions.
     Plane line(1, 4);
     for (int c = 0; c < 4; ++c) line.At(0, c) = c;
-    const Plane wide = ResizeLinear(line, 1, 8);
+    const Plane wide = ResizeLinear(line, 1, 8, Align::Corners);
     double rampWorst = 0.0;
     for (int c = 0; c < 8; ++c) rampWorst = std::fmax(rampWorst, std::fabs(wide.At(0, c) - c * 3.0 / 7.0));
     ck.Close("upsampling a ramp stays linear", rampWorst, 0.0, 1e-15);
     ck.Close("the last sample lines up", wide.At(0, 7), 3.0, 0.0);
-    const Plane back = ResizeLinear(wide, 1, 4);
+    const Plane back = ResizeLinear(wide, 1, 4, Align::Corners);
     ck.Close("down again recovers it", back.At(0, 2), 2.0, 1e-15);
+
+    // Centre alignment averages each pair of 0, 1, 2, 3 on the way down, and holds the edges on the way up.
+    const Plane halved = ResizeLinear(line, 1, 2, Align::Centres);
+    ck.Require("centres: halving a ramp lands between samples",
+               halved.At(0, 0) == 0.5 && halved.At(0, 1) == 2.5);
+    Plane pair(1, 2);
+    pair.At(0, 1) = 1.0;
+    const Plane doubled = ResizeLinear(pair, 1, 4, Align::Centres);
+    ck.Require("centres: doubling holds the edges",
+               doubled.At(0, 0) == 0.0 && doubled.At(0, 1) == 0.25 && doubled.At(0, 2) == 0.75 &&
+                   doubled.At(0, 3) == 1.0);
 
     Plane step(12, 80);
     for (int r = 0; r < 12; ++r)

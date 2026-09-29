@@ -40,13 +40,15 @@ int main() {
                !std::strcmp(ChannelName(Contrast), "contrast") &&
                    !std::strcmp(ChannelName(Colour), "colour") &&
                    !std::strcmp(ChannelName(Chroma), "chroma") &&
+                   !std::strcmp(ChannelName(Face), "face") &&
                    !std::strcmp(ChannelName(Centre), "centre"));
 
     SaliencyModel flatModel;
-    flatModel.SetImage(Grey(81, 121, 0.5));
+    flatModel.SetImage(Grey(81, 121, 0.5), {});
     ck.Close("a flat picture has no contrast", Largest(flatModel.ChannelMap(Contrast)), 0.0, 0.0);
     ck.Close("no colour contrast", Largest(flatModel.ChannelMap(Colour)), 0.0, 0.0);
     ck.Close("no chroma", Largest(flatModel.ChannelMap(Chroma)), 0.0, 0.0);
+    ck.Close("no faces", Largest(flatModel.ChannelMap(Face)), 0.0, 0.0);
     ck.Close("only the centre is left", Largest(flatModel.ChannelMap(Centre)), 1.0, 0.0);
     ck.Require("so the eye lands in the middle",
                std::fabs(flatModel.Fixation().x - 0.5) <= 1.0 / 121 &&
@@ -55,7 +57,7 @@ int main() {
     PreparedImage one = Grey(120, 160, 0.5);
     Disc(one, 30, 40, 6, 0.9, 0.12, 0.06);
     SaliencyModel model;
-    model.SetImage(one);
+    model.SetImage(one, {});
     // Contrast is an edge measure, so the eye lands on the dot's rim rather than its middle.
     ck.Require("a bright saturated dot draws the eye onto it",
                PixelsFrom(model.Fixation(), 120, 160, 30, 40) <= 6.0);
@@ -73,9 +75,9 @@ int main() {
     Disc(two, 50, 40, 6, 0.9, 0.12, 0.06);
     Disc(two, 50, 160, 6, 0.9, 0.12, 0.06);
     SaliencyModel pair;
-    pair.SetImage(two);
+    pair.SetImage(two, {});
     const double nearOne = std::fmin(PixelsFrom(pair.Fixation(), 100, 200, 50, 40),
-                                      PixelsFrom(pair.Fixation(), 100, 200, 50, 160));
+                                     PixelsFrom(pair.Fixation(), 100, 200, 50, 160));
     ck.Require("two peaks: it lands on one of them", nearOne <= 6.0);
     ck.Require("and not in the gap between them", PixelsFrom(pair.Fixation(), 100, 200, 50, 100) > 40.0);
 
@@ -102,6 +104,20 @@ int main() {
     ck.Require("and only the highest sample is in it", !top[0] && !top[1] && top[2]);
     const std::vector<char> blank = TopRegion(Plane(4, 4));
     ck.Require("a blank total has no top region", std::find(blank.begin(), blank.end(), 1) == blank.end());
+
+    const Plane face = FaceChannel({FaceBox{10, 30, 20, 40}}, 100, 80);
+    ck.Close("a face peaks at its centre", face.At(50, 20), 1.0, 0.0);
+    ck.Close("and falls to exp(-1/2) at the box's side", face.At(50, 30), std::exp(-0.5), 1e-15);
+    ck.Close("and at its top", face.At(30, 20), std::exp(-0.5), 1e-15);
+    const Plane both = FaceChannel({FaceBox{10, 30, 20, 40}, FaceBox{14, 30, 20, 40}}, 100, 80);
+    ck.Close("overlapping faces do not add up", Largest(both), 1.0, 0.0);
+
+    // A face off to one side of an empty picture: only the centre prior pulls the other way.
+    SaliencyModel withFace;
+    withFace.SetImage(Grey(120, 160, 0.5), {FaceBox{100, 60, 30, 36}});
+    ck.Require("a detected face draws the eye onto it",
+               PixelsFrom(withFace.Fixation(), 120, 160, 78, 115) <= 15.0);
+    ck.Require("and the face channel explains most of it", withFace.TopShare(Face) > 0.5);
 
     const Plane colourBefore = model.ChannelMap(Colour);
     const Plane totalBefore = model.Total();

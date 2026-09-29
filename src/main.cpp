@@ -1,6 +1,8 @@
+#define NOMINMAX
+#include <windows.h>
+
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -13,6 +15,8 @@
 static const int LONG_EDGE = 1024;
 static const double HEAT_OPACITY = 0.55;
 static const double MARK[3] = {0.0, 1.0, 0.53};
+static const double FACE_MARK[3] = {0.3, 0.8, 1.0};
+static const wchar_t* const MODEL_NAME = L"anime_face_v14s.onnx";
 
 class Stopwatch {
 public:
@@ -63,8 +67,25 @@ static void Paint(RgbImage& img, int r, int c, const double* rgb) {
     img.b.At(r, c) = rgb[2];
 }
 
-// The picture under the heat map, the edge of the top tenth, and a cross on the fixation.
-static RgbImage OverlayImage(const RgbImage& picture, const Plane& total, const FixationPoint& fix) {
+static void Outline(RgbImage& img, const FaceBox& f) {
+    for (int t = 0; t < 2; ++t) {
+        for (int c = f.x; c < f.x + f.w; ++c) {
+            Paint(img, f.y + t, c, FACE_MARK);
+            Paint(img, f.y + f.h - 1 - t, c, FACE_MARK);
+        }
+        for (int r = f.y; r < f.y + f.h; ++r) {
+            Paint(img, r, f.x + t, FACE_MARK);
+            Paint(img, r, f.x + f.w - 1 - t, FACE_MARK);
+        }
+    }
+}
+
+// The picture under the heat map, the detected faces, the edge of the top tenth, and a cross on the fixation.
+static RgbImage OverlayImage(const RgbImage& picture, const SaliencyModel& model,
+                             const std::vector<FaceBox>& faces) {
+    const Plane& total = model.Total();
+    const std::vector<char>& top = model.Top();
+    const FixationPoint& fix = model.Fixation();
     RgbImage out = HeatImage(total);
     for (std::size_t i = 0; i < total.Size(); ++i) {
         out.r.v[i] = (1.0 - HEAT_OPACITY) * picture.r.v[i] + HEAT_OPACITY * out.r.v[i];
@@ -72,7 +93,8 @@ static RgbImage OverlayImage(const RgbImage& picture, const Plane& total, const 
         out.b.v[i] = (1.0 - HEAT_OPACITY) * picture.b.v[i] + HEAT_OPACITY * out.b.v[i];
     }
 
-    const std::vector<char> top = TopRegion(total);
+    for (const FaceBox& f : faces) Outline(out, f);
+
     const int rows = total.rows, cols = total.cols;
     for (int r = 0; r < rows; ++r) {
         for (int c = 0; c < cols; ++c) {
@@ -107,13 +129,37 @@ static bool Save(ImageCodec& codec, const std::filesystem::path& prefix, const w
     return true;
 }
 
+// The build copies the model into models/ beside the executable.
+static std::wstring DefaultModelPath() {
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    return (std::filesystem::path(exe).parent_path() / L"models" / MODEL_NAME).wstring();
+}
+
+static const char* Describe(FaceStatus status) {
+    switch (status) {
+    case FaceStatus::Ready: return "ready";
+    case FaceStatus::ModelMissing: return "model not found";
+    case FaceStatus::LoadFailed: return "model failed to load";
+    case FaceStatus::DetectFailed: return "detection failed";
+    }
+    return "unknown";
+}
+
 int wmain(int argc, wchar_t** argv) {
-    if (argc < 2) {
-        std::printf("usage: gazeprobe <image> [output prefix]\n");
+    std::vector<std::wstring> positional;
+    std::wstring modelPath = DefaultModelPath();
+    for (int i = 1; i < argc; ++i) {
+        if (std::wstring(argv[i]) == L"--model" && i + 1 < argc) modelPath = argv[++i];
+        else positional.push_back(argv[i]);
+    }
+    if (positional.empty()) {
+        std::printf("usage: gazeprobe <image> [output prefix] [--model <face model.onnx>]\n");
         return 2;
     }
-    const std::filesystem::path input = argv[1];
-    const std::filesystem::path prefix = argc > 2 ? std::filesystem::path(argv[2]) : input.stem();
+    const std::filesystem::path input = positional[0];
+    const std::filesystem::path prefix =
+        positional.size() > 1 ? std::filesystem::path(positional[1]) : input.stem();
 
     ImageCodec codec;
     if (!codec.Ok()) {
@@ -133,12 +179,23 @@ int wmain(int argc, wchar_t** argv) {
     const PreparedImage img = ToOklab(picture.r, picture.g, picture.b);
     const double oklabMs = clock.LapMs();
 
+    FaceDetector detector(modelPath);
+    const double modelLoadMs = clock.LapMs();
+    const std::vector<FaceBox> faces = detector.Detect(picture);
+    const double facesMs = clock.LapMs();
+
     SaliencyModel model;
-    model.SetImage(img);
-    const double modelMs = clock.LapMs();
+    model.SetImage(img, faces);
+    const double saliencyMs = clock.LapMs();
 
     const FixationPoint& fix = model.Fixation();
     std::printf("image      %d x %d\n", img.Cols(), img.Rows());
+    if (detector.Status() == FaceStatus::Ready) {
+        std::printf("faces      %d\n", int(faces.size()));
+        for (const FaceBox& f : faces) std::printf("           at %d, %d  size %d x %d\n", f.x, f.y, f.w, f.h);
+    } else {
+        std::printf("faces      off: %s (%s)\n", Describe(detector.Status()), detector.Detail().c_str());
+    }
     std::printf("fixation   x %.4f  y %.4f   (pixel %d, %d)\n", fix.x, fix.y,
                 int(fix.x * img.Cols()), int(fix.y * img.Rows()));
     std::printf("\n%-10s %8s %10s %12s\n", "channel", "weight", "overall", "in top 10%");
@@ -147,11 +204,12 @@ int wmain(int argc, wchar_t** argv) {
         std::printf("%-10s %8.2f %9.1f%% %11.1f%%\n", ChannelName(ch), model.Weight(ch),
                     100.0 * model.Share(ch), 100.0 * model.TopShare(ch));
     }
-    std::printf("\nload %.1f ms   oklab %.1f ms   saliency %.1f ms\n", loadMs, oklabMs, modelMs);
+    std::printf("\nload %.1f ms   oklab %.1f ms   face model %.1f ms   faces %.1f ms   saliency %.1f ms\n",
+                loadMs, oklabMs, modelLoadMs, facesMs, saliencyMs);
 
     bool written = Save(codec, prefix, L"_heat.png", HeatImage(model.Total())) &&
                    Save(codec, prefix, L"_overlay.png",
-                        OverlayImage(picture, model.Total(), fix));
+                        OverlayImage(picture, model, faces));
     for (int c = 0; c < ChannelCount && written; ++c) {
         const Channel ch = Channel(c);
         const std::string name = std::string("_") + ChannelName(ch) + ".png";

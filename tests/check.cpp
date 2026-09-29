@@ -12,7 +12,7 @@ void Checker::Close(const std::string& what, double got, double want, double tol
 
 // Reports the worst pixel, which is what you want when a filter is slightly off everywhere.
 void Checker::Close(const std::string& what, const Plane& got, const Plane& want, double tol) {
-    if (!got.SameShape(want)) {
+    if (got.rows != want.rows || got.cols != want.cols) {
         Record(false, what, "shape mismatch");
         return;
     }

@@ -13,7 +13,7 @@ struct RgbImage {
     int Cols() const { return r.cols; }
 };
 
-// Reads and writes images through WIC, which ships with Windows and takes wide-character paths.
+// Reads and writes images through WIC, the imaging API built into Windows.
 class ImageCodec {
 public:
     ImageCodec();
