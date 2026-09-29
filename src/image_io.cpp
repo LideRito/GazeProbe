@@ -14,11 +14,10 @@
 
 using Microsoft::WRL::ComPtr;
 
-static bool Fail(std::string& error, const char* what, HRESULT hr) {
-    char text[96];
-    std::snprintf(text, sizeof text, "%s failed (0x%08lX)", what, static_cast<unsigned long>(hr));
-    error = text;
-    return false;
+static std::string HexCode(HRESULT hr) {
+    char text[16];
+    std::snprintf(text, sizeof text, "0x%08lX", static_cast<unsigned long>(hr));
+    return text;
 }
 
 // Straight (not premultiplied) alpha, composited over a white background.
@@ -58,6 +57,7 @@ ImageCodec::ImageCodec() {
     comStarted_ = SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED));
     CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
                      IID_PPV_ARGS(&factory_));
+    if (!factory_) status_ = ImageStatus::Unavailable;
 }
 
 ImageCodec::~ImageCodec() {
@@ -65,32 +65,36 @@ ImageCodec::~ImageCodec() {
     if (comStarted_) CoUninitialize();
 }
 
-bool ImageCodec::Load(const std::wstring& path, int longEdge, RgbImage& out, std::string& error) {
-    if (!factory_) {
-        error = "WIC is not available";
-        return false;
-    }
+RgbImage ImageCodec::Load(const std::wstring& path, int longEdge) {
+    if (!factory_) return {};
+    status_ = ImageStatus::Ready;
+    detail_.clear();
 
     HRESULT hr = S_OK;
+    auto fail = [this](ImageStatus status, HRESULT code) {
+        status_ = status;
+        detail_ = HexCode(code);
+        return RgbImage();
+    };
 
     ComPtr<IWICBitmapDecoder> decoder;
     hr = factory_->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
                                              WICDecodeMetadataCacheOnDemand, &decoder);
-    if (FAILED(hr)) return Fail(error, "opening the image", hr);
+    if (FAILED(hr)) return fail(ImageStatus::OpenFailed, hr);
 
     ComPtr<IWICBitmapFrameDecode> frame;
-    if (FAILED(hr = decoder->GetFrame(0, &frame))) return Fail(error, "reading a frame", hr);
+    if (FAILED(hr = decoder->GetFrame(0, &frame))) return fail(ImageStatus::DecodeFailed, hr);
 
     ComPtr<IWICFormatConverter> converter;
     if (FAILED(hr = factory_->CreateFormatConverter(&converter)))
-        return Fail(error, "creating a converter", hr);
+        return fail(ImageStatus::DecodeFailed, hr);
     hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone,
                                nullptr, 0.0, WICBitmapPaletteTypeCustom);
-    if (FAILED(hr)) return Fail(error, "converting to BGRA", hr);
+    if (FAILED(hr)) return fail(ImageStatus::DecodeFailed, hr);
 
     std::vector<BYTE> px;
     int w = 0, h = 0;
-    if (FAILED(hr = CopyBgra(converter.Get(), px, w, h))) return Fail(error, "copying pixels", hr);
+    if (FAILED(hr = CopyBgra(converter.Get(), px, w, h))) return fail(ImageStatus::DecodeFailed, hr);
 
     const double scale = double(longEdge) / std::max(w, h);
     if (scale < 1.0) {
@@ -99,26 +103,24 @@ bool ImageCodec::Load(const std::wstring& path, int longEdge, RgbImage& out, std
         ComPtr<IWICBitmap> bitmap;
         hr = factory_->CreateBitmapFromMemory(UINT(w), UINT(h), GUID_WICPixelFormat32bppBGRA,
                                               UINT(w) * 4, UINT(px.size()), px.data(), &bitmap);
-        if (FAILED(hr)) return Fail(error, "wrapping the pixels", hr);
+        if (FAILED(hr)) return fail(ImageStatus::ResizeFailed, hr);
 
         const int nw = ScaledSize(w, scale);
         const int nh = ScaledSize(h, scale);
         ComPtr<IWICBitmapScaler> scaler;
-        if (FAILED(hr = factory_->CreateBitmapScaler(&scaler))) return Fail(error, "creating a scaler", hr);
+        if (FAILED(hr = factory_->CreateBitmapScaler(&scaler))) return fail(ImageStatus::ResizeFailed, hr);
         hr = scaler->Initialize(bitmap.Get(), UINT(nw), UINT(nh), WICBitmapInterpolationModeHighQualityCubic);
-        if (FAILED(hr)) return Fail(error, "setting up the resize", hr);
-        if (FAILED(hr = CopyBgra(scaler.Get(), px, w, h))) return Fail(error, "resizing", hr);
+        if (FAILED(hr)) return fail(ImageStatus::ResizeFailed, hr);
+        if (FAILED(hr = CopyBgra(scaler.Get(), px, w, h))) return fail(ImageStatus::ResizeFailed, hr);
     }
 
-    out = PlanesFromBgra(px, w, h);
-    return true;
+    return PlanesFromBgra(px, w, h);
 }
 
-bool ImageCodec::SavePng(const std::wstring& path, const RgbImage& img, std::string& error) {
-    if (!factory_) {
-        error = "WIC is not available";
-        return false;
-    }
+bool ImageCodec::SavePng(const std::wstring& path, const RgbImage& img) {
+    if (!factory_) return false;
+    status_ = ImageStatus::Ready;
+    detail_.clear();
     const int w = img.Cols(), h = img.Rows();
     std::vector<BYTE> px(std::size_t(w) * h * 3);
     for (std::size_t i = 0; i < img.r.Size(); ++i) {
@@ -128,31 +130,37 @@ bool ImageCodec::SavePng(const std::wstring& path, const RgbImage& img, std::str
     }
 
     HRESULT hr = S_OK;
+    auto fail = [this](HRESULT code) {
+        status_ = ImageStatus::WriteFailed;
+        detail_ = HexCode(code);
+        return false;
+    };
 
     ComPtr<IWICStream> stream;
-    if (FAILED(hr = factory_->CreateStream(&stream))) return Fail(error, "creating a stream", hr);
+    if (FAILED(hr = factory_->CreateStream(&stream))) return fail(hr);
     if (FAILED(hr = stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE)))
-        return Fail(error, "creating the file", hr);
+        return fail(hr);
 
     ComPtr<IWICBitmapEncoder> encoder;
     if (FAILED(hr = factory_->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)))
-        return Fail(error, "creating the encoder", hr);
+        return fail(hr);
     if (FAILED(hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache)))
-        return Fail(error, "starting the encoder", hr);
+        return fail(hr);
 
     ComPtr<IWICBitmapFrameEncode> frame;
-    if (FAILED(hr = encoder->CreateNewFrame(&frame, nullptr))) return Fail(error, "adding a frame", hr);
-    if (FAILED(hr = frame->Initialize(nullptr))) return Fail(error, "starting the frame", hr);
-    if (FAILED(hr = frame->SetSize(UINT(w), UINT(h)))) return Fail(error, "setting the size", hr);
+    if (FAILED(hr = encoder->CreateNewFrame(&frame, nullptr))) return fail(hr);
+    if (FAILED(hr = frame->Initialize(nullptr))) return fail(hr);
+    if (FAILED(hr = frame->SetSize(UINT(w), UINT(h)))) return fail(hr);
     WICPixelFormatGUID format = GUID_WICPixelFormat24bppBGR;
-    if (FAILED(hr = frame->SetPixelFormat(&format))) return Fail(error, "setting the pixel format", hr);
+    if (FAILED(hr = frame->SetPixelFormat(&format))) return fail(hr);
     if (format != GUID_WICPixelFormat24bppBGR) {
-        error = "the PNG encoder refused 24-bit BGR";
+        status_ = ImageStatus::WriteFailed;
+        detail_ = "encoder refused 24-bit BGR";
         return false;
     }
     hr = frame->WritePixels(UINT(h), UINT(w) * 3, UINT(px.size()), px.data());
-    if (FAILED(hr)) return Fail(error, "writing pixels", hr);
-    if (FAILED(hr = frame->Commit())) return Fail(error, "finishing the frame", hr);
-    if (FAILED(hr = encoder->Commit())) return Fail(error, "finishing the file", hr);
+    if (FAILED(hr)) return fail(hr);
+    if (FAILED(hr = frame->Commit())) return fail(hr);
+    if (FAILED(hr = encoder->Commit())) return fail(hr);
     return true;
 }

@@ -27,9 +27,14 @@ static float Iou(const Candidate& a, const Candidate& b) {
     return float(inter / (double(a.w) * a.h + double(b.w) * b.h - inter));
 }
 
+// How far the picture is scaled so that its long edge spans the square.
+double LetterboxScale(const RgbImage& img, int edge) {
+    return double(edge) / std::max(img.Rows(), img.Cols());
+}
+
 // The network wants a square: the picture in its top-left corner and grey everywhere else.
-RgbImage Letterbox(const RgbImage& img, int edge, double& scale) {
-    scale = double(edge) / std::max(img.Rows(), img.Cols());
+RgbImage Letterbox(const RgbImage& img, int edge) {
+    const double scale = LetterboxScale(img, edge);
     const int nh = ScaledSize(img.Rows(), scale);
     const int nw = ScaledSize(img.Cols(), scale);
     const double grey = PADDING / 255.0;
@@ -64,8 +69,8 @@ std::vector<FaceBox> DecodeDetections(const Plane& output, double scale) {
     // Non-maximum suppression: the network fires on many overlapping anchors per face, so keep the strongest.
     std::vector<Candidate> kept;
     for (const Candidate& c : found) {
-        bool overlaps = false;
-        for (const Candidate& k : kept) overlaps = overlaps || Iou(c, k) > MAX_OVERLAP;
+        const bool overlaps = std::any_of(kept.begin(), kept.end(),
+                                          [&](const Candidate& k) { return Iou(c, k) > MAX_OVERLAP; });
         if (!overlaps) kept.push_back(c);
     }
 
@@ -102,12 +107,12 @@ FaceDetector::FaceDetector(const std::wstring& modelPath) {
 
 FaceDetector::~FaceDetector() = default;
 
-bool FaceDetector::Infer(const RgbImage& input, Plane& output) {
-    if (!session_) return false;
+Plane FaceDetector::Infer(const RgbImage& input) {
+    if (!session_) return {};
     if (input.Rows() != NETWORK_EDGE || input.Cols() != NETWORK_EDGE) {
         status_ = FaceStatus::DetectFailed;
         detail_ = "input is not a 640x640 letterbox";
-        return false;
+        return {};
     }
     status_ = FaceStatus::Ready;
     detail_.clear();
@@ -131,24 +136,22 @@ bool FaceDetector::Infer(const RgbImage& input, Plane& output) {
         if (dims.size() != 3 || dims[1] != 5) {
             status_ = FaceStatus::DetectFailed;
             detail_ = "unexpected output shape";
-            return false;
+            return {};
         }
         // The (1, 5, count) tensor is stored row by row, the same order as a 5 x count Plane.
         const float* data = result[0].GetTensorData<float>();
-        output = Plane(5, int(dims[2]));
+        Plane output(5, int(dims[2]));
         for (std::size_t i = 0; i < output.Size(); ++i) output.v[i] = data[i];
-        return true;
+        return output;
     } catch (const std::exception& e) {
         status_ = FaceStatus::DetectFailed;
         detail_ = e.what();
-        return false;
+        return {};
     }
 }
 
 std::vector<FaceBox> FaceDetector::Detect(const RgbImage& img) {
-    double scale = 1.0;
-    const RgbImage input = Letterbox(img, NETWORK_EDGE, scale);
-    Plane output;
-    if (!Infer(input, output)) return {};
-    return DecodeDetections(output, scale);
+    const Plane output = Infer(Letterbox(img, NETWORK_EDGE));
+    if (output.Empty()) return {};
+    return DecodeDetections(output, LetterboxScale(img, NETWORK_EDGE));
 }

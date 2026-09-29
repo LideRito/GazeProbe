@@ -11,7 +11,10 @@ struct RgbImage {
 
     int Rows() const { return r.rows; }
     int Cols() const { return r.cols; }
+    bool Empty() const { return r.Empty(); }
 };
+
+enum class ImageStatus { Ready, Unavailable, OpenFailed, DecodeFailed, ResizeFailed, WriteFailed };
 
 // Reads and writes images through WIC, the imaging API built into Windows.
 class ImageCodec {
@@ -21,13 +24,16 @@ public:
     ImageCodec(const ImageCodec&) = delete;
     ImageCodec& operator=(const ImageCodec&) = delete;
 
-    bool Ok() const { return factory_ != nullptr; }
+    ImageStatus Status() const { return status_; }
+    const std::string& Detail() const { return detail_; }
 
-    // Transparency is flattened onto white, and the image is shrunk to longEdge but never enlarged.
-    bool Load(const std::wstring& path, int longEdge, RgbImage& out, std::string& error);
-    bool SavePng(const std::wstring& path, const RgbImage& img, std::string& error);
+    // Flattens transparency onto white and shrinks to longEdge, never enlarging; empty on failure.
+    RgbImage Load(const std::wstring& path, int longEdge);
+    bool SavePng(const std::wstring& path, const RgbImage& img);
 
 private:
     IWICImagingFactory* factory_ = nullptr;
     bool comStarted_ = false;
+    ImageStatus status_ = ImageStatus::Ready;
+    std::string detail_;
 };

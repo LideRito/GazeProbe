@@ -10,8 +10,12 @@ struct PreparedImage {
     int Cols() const { return L.cols; }
 };
 
-double SrgbToLinear(double x);
+// One colour in Oklab: lightness L, then a (green to red) and b (blue to yellow).
+struct Lab {
+    double L, a, b;
+};
 
-void SrgbToOklab(double r, double g, double b, double& outL, double& outA, double& outB);
+double SrgbToLinear(double x);
+Lab SrgbToOklab(double r, double g, double b);
 
 PreparedImage ToOklab(const Plane& r, const Plane& g, const Plane& b);

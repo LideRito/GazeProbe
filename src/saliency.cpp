@@ -1,7 +1,9 @@
 #include "saliency.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
+#include <utility>
 #include <vector>
 
 #include "filters.h"
@@ -35,17 +37,15 @@ static double Percentile(const std::vector<double>& sorted, double q) {
     return sorted[i0] + (sorted[i1] - sorted[i0]) * (position - double(i0));
 }
 
-static bool MinMax(const Plane& p, double& lo, double& hi) {
-    if (p.Empty()) return false;
+static std::pair<double, double> MinMax(const Plane& p) {
+    assert(!p.Empty());
     const auto [low, high] = std::minmax_element(p.v.begin(), p.v.end());
-    lo = *low;
-    hi = *high;
-    return true;
+    return {*low, *high};
 }
 
 static void Normalise(Plane& p) {
-    double lo = 0.0, hi = 0.0;
-    if (!MinMax(p, lo, hi) || hi - lo < 1e-12) {
+    const auto [lo, hi] = MinMax(p);
+    if (hi - lo < 1e-12) {
         std::fill(p.v.begin(), p.v.end(), 0.0);
         return;
     }
@@ -165,8 +165,7 @@ Plane Stretch(const Plane& raw) {
 
 // The top tenth of the value range, which is not the same as the brightest tenth of the pixels.
 double TopLevel(const Plane& total) {
-    double lo = 0.0, hi = 0.0;
-    MinMax(total, lo, hi);
+    const auto [lo, hi] = MinMax(total);
     return hi - TOP_FRACTION * (hi - lo);
 }
 

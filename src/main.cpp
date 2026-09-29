@@ -117,13 +117,24 @@ static RgbImage OverlayImage(const RgbImage& picture, const SaliencyModel& model
     return out;
 }
 
+static const char* Describe(ImageStatus status) {
+    switch (status) {
+    case ImageStatus::Ready: return "ready";
+    case ImageStatus::Unavailable: return "WIC is not available on this system";
+    case ImageStatus::OpenFailed: return "could not open the image";
+    case ImageStatus::DecodeFailed: return "could not decode the image";
+    case ImageStatus::ResizeFailed: return "could not resize the image";
+    case ImageStatus::WriteFailed: return "could not write the image";
+    }
+    return "unknown";
+}
+
 static bool Save(ImageCodec& codec, const std::filesystem::path& prefix, const wchar_t* suffix,
                  const RgbImage& img) {
     std::filesystem::path path = prefix;
     path += suffix;
-    std::string error;
-    if (!codec.SavePng(path.wstring(), img, error)) {
-        std::printf("could not write %ls: %s\n", suffix, error.c_str());
+    if (!codec.SavePng(path.wstring(), img)) {
+        std::printf("%ls: %s (%s)\n", suffix, Describe(codec.Status()), codec.Detail().c_str());
         return false;
     }
     return true;
@@ -164,16 +175,15 @@ int wmain(int argc, wchar_t** argv) {
         positional.size() > 1 ? std::filesystem::path(positional[1]) : input.stem();
 
     ImageCodec codec;
-    if (!codec.Ok()) {
-        std::printf("WIC is not available on this system\n");
+    if (codec.Status() != ImageStatus::Ready) {
+        std::printf("%s\n", Describe(codec.Status()));
         return 1;
     }
 
     Stopwatch clock;
-    RgbImage picture;
-    std::string error;
-    if (!codec.Load(input.wstring(), LONG_EDGE, picture, error)) {
-        std::printf("%s\n", error.c_str());
+    const RgbImage picture = codec.Load(input.wstring(), LONG_EDGE);
+    if (picture.Empty()) {
+        std::printf("%s (%s)\n", Describe(codec.Status()), codec.Detail().c_str());
         return 1;
     }
     const double loadMs = clock.LapMs();

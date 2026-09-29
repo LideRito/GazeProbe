@@ -21,8 +21,8 @@ int main() {
     std::printf("test_image_io\n");
 
     ImageCodec codec;
-    ck.Require("WIC is available", codec.Ok());
-    if (!codec.Ok()) return ck.Report("test_image_io");
+    ck.Require("WIC is available", codec.Status() == ImageStatus::Ready);
+    if (codec.Status() != ImageStatus::Ready) return ck.Report("test_image_io");
 
     const RgbImage picture = Gradient(30, 40);
     const std::filesystem::path dir = std::filesystem::temp_directory_path();
@@ -30,14 +30,12 @@ int main() {
     const std::filesystem::path paths[2] = {dir / L"gazeprobe_round_trip.png", dir / L"gazeprobe_画像.png"};
 
     for (const std::filesystem::path& path : paths) {
-        std::string error;
-        const bool saved = codec.SavePng(path.wstring(), picture, error);
-        RgbImage back;
-        const bool loaded = saved && codec.Load(path.wstring(), 1024, back, error);
+        const bool saved = codec.SavePng(path.wstring(), picture);
+        const RgbImage back = saved ? codec.Load(path.wstring(), 1024) : RgbImage();
         const std::string tag = path == paths[0] ? "ascii path" : "non-ascii path";
-        ck.Require(tag + ": saved and loaded", loaded);
-        if (!loaded) {
-            std::printf("        %s\n", error.c_str());
+        ck.Require(tag + ": saved and loaded", !back.Empty());
+        if (back.Empty()) {
+            std::printf("        status %d, %s\n", int(codec.Status()), codec.Detail().c_str());
             continue;
         }
         ck.Require(tag + ": same size", back.Rows() == 30 && back.Cols() == 40);
@@ -47,19 +45,17 @@ int main() {
         ck.Close(tag + ": blue survives", back.b, picture.b, step);
     }
 
-    RgbImage shrunk;
-    std::string error;
-    ck.Require("shrinking keeps the aspect",
-               codec.Load(paths[0].wstring(), 20, shrunk, error) && shrunk.Rows() == 15 && shrunk.Cols() == 20);
+    const RgbImage shrunk = codec.Load(paths[0].wstring(), 20);
+    ck.Require("shrinking keeps the aspect", shrunk.Rows() == 15 && shrunk.Cols() == 20);
 
-    RgbImage untouched;
-    ck.Require("never enlarges",
-               codec.Load(paths[0].wstring(), 4096, untouched, error) && untouched.Cols() == 40);
+    const RgbImage untouched = codec.Load(paths[0].wstring(), 4096);
+    ck.Require("never enlarges", untouched.Cols() == 40);
 
-    RgbImage missing;
+    const RgbImage missing = codec.Load((dir / L"gazeprobe_missing.png").wstring(), 1024);
     ck.Require("a missing file is an error, not a crash",
-               !codec.Load((dir / L"gazeprobe_missing.png").wstring(), 1024, missing, error) &&
-                   !error.empty());
+               missing.Empty() && codec.Status() == ImageStatus::OpenFailed);
+    ck.Require("and the next success clears it",
+               !codec.Load(paths[0].wstring(), 1024).Empty() && codec.Status() == ImageStatus::Ready);
 
     for (const std::filesystem::path& path : paths) std::filesystem::remove(path);
     return ck.Report("test_image_io");

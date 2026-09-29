@@ -17,42 +17,35 @@ int main() {
              SrgbToLinear(0.04045 + 1e-12), 1e-8);
 
     // sRGB red, which CSS Color 4 lists as oklch(62.8% 0.2577 29.23).
-    double redL, redA, redB;
-    SrgbToOklab(1.0, 0.0, 0.0, redL, redA, redB);
-    ck.Close("red lightness", redL, 0.628, 5e-4);
-    ck.Close("red chroma", std::hypot(redA, redB), 0.2577, 5e-5);
-    ck.Close("red hue in degrees", std::atan2(redB, redA) * 180.0 / 3.14159265358979323846, 29.23, 5e-3);
+    const Lab red = SrgbToOklab(1.0, 0.0, 0.0);
+    ck.Close("red lightness", red.L, 0.628, 5e-4);
+    ck.Close("red chroma", std::hypot(red.a, red.b), 0.2577, 5e-5);
+    ck.Close("red hue in degrees", std::atan2(red.b, red.a) * 180.0 / 3.14159265358979323846, 29.23, 5e-3);
 
     // Not zero: the published LMS rows do not sum to exactly 1, leaving ~3.7e-8 at white.
     double greyWorst = 0.0;
     for (int i = 0; i <= 32; ++i) {
-        double L, a, b;
-        SrgbToOklab(i / 32.0, i / 32.0, i / 32.0, L, a, b);
-        greyWorst = std::fmax(greyWorst, std::fmax(std::fabs(a), std::fabs(b)));
+        const Lab grey = SrgbToOklab(i / 32.0, i / 32.0, i / 32.0);
+        greyWorst = std::fmax(greyWorst, std::fmax(std::fabs(grey.a), std::fabs(grey.b)));
     }
     ck.Close("grey stays achromatic", greyWorst, 0.0, 1e-6);
 
-    double whiteL, blackL, ignoredA, ignoredB;
-    SrgbToOklab(1.0, 1.0, 1.0, whiteL, ignoredA, ignoredB);
-    SrgbToOklab(0.0, 0.0, 0.0, blackL, ignoredA, ignoredB);
-    ck.Close("white has L = 1", whiteL, 1.0, 1e-6);
-    ck.Close("black has L = 0", blackL, 0.0, 1e-9);
+    ck.Close("white has L = 1", SrgbToOklab(1.0, 1.0, 1.0).L, 1.0, 1e-6);
+    ck.Close("black has L = 0", SrgbToOklab(0.0, 0.0, 0.0).L, 0.0, 1e-9);
 
     // Lightness has to be monotonic in grey level or every value measure is meaningless.
     bool rising = true;
     double previous = -1.0;
     for (int i = 0; i <= 64; ++i) {
-        double L, a, b;
-        SrgbToOklab(i / 64.0, i / 64.0, i / 64.0, L, a, b);
+        const double L = SrgbToOklab(i / 64.0, i / 64.0, i / 64.0).L;
         rising = rising && L > previous;
         previous = L;
     }
     ck.Require("lightness rises with grey level", rising);
 
-    double L, a, b;
-    SrgbToOklab(0.0, 0.0, 1.2, L, a, b);
+    const Lab beyond = SrgbToOklab(0.0, 0.0, 1.2);
     ck.Require("out-of-gamut input stays finite",
-               std::isfinite(L) && std::isfinite(a) && std::isfinite(b));
+               std::isfinite(beyond.L) && std::isfinite(beyond.a) && std::isfinite(beyond.b));
 
     const int n = 8;
     Plane r(n, n, 0.8), g(n, n, 0.3), bp(n, n, 0.2);

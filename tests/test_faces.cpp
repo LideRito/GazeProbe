@@ -21,9 +21,8 @@ int main() {
 
     // A wide picture: it fills the top of the square, and the padding below stays grey.
     RgbImage wide{Plane(20, 40, 1.0), Plane(20, 40, 0.0), Plane(20, 40, 0.5)};
-    double scale = 0.0;
-    const RgbImage canvas = Letterbox(wide, 16, scale);
-    ck.Close("scale fits the long edge", scale, 16.0 / 40.0, 0.0);
+    const RgbImage canvas = Letterbox(wide, 16);
+    ck.Close("scale fits the long edge", LetterboxScale(wide, 16), 16.0 / 40.0, 0.0);
     ck.Require("the canvas is square", canvas.Rows() == 16 && canvas.Cols() == 16);
     ck.Close("red carries over", canvas.r.At(0, 0), 1.0, 0.0);
     ck.Close("green carries over", canvas.g.At(0, 0), 0.0, 0.0);

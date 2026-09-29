@@ -17,7 +17,8 @@ struct FaceBox {
 
 enum class FaceStatus { Ready, ModelMissing, LoadFailed, DetectFailed };
 
-RgbImage Letterbox(const RgbImage& img, int edge, double& scale);
+double LetterboxScale(const RgbImage& img, int edge);
+RgbImage Letterbox(const RgbImage& img, int edge);
 std::vector<FaceBox> DecodeDetections(const Plane& output, double scale);
 
 // Runs a YOLOv8 face detector through ONNX Runtime; without a model it reports why and finds nothing.
@@ -31,7 +32,8 @@ public:
     FaceStatus Status() const { return status_; }
     const std::string& Detail() const { return detail_; }
 
-    bool Infer(const RgbImage& input, Plane& output);
+    // The raw network output, 5 rows by one column per candidate; empty on failure.
+    Plane Infer(const RgbImage& input);
     std::vector<FaceBox> Detect(const RgbImage& img);
 
 private:
