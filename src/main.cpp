@@ -2,62 +2,38 @@
 #include <windows.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <string>
 #include <vector>
 
+#include "app_utils.h"
+#include "faces.h"
 #include "image_io.h"
 #include "oklab.h"
+#include "overlay_utils.h"
 #include "saliency.h"
 
-static const int LONG_EDGE = 1024;
-static const double HEAT_OPACITY = 0.55;
-static const double MARK[3] = {0.0, 1.0, 0.53};
-static const double FACE_MARK[3] = {0.3, 0.8, 1.0};
-static const wchar_t* const MODEL_NAME = L"anime_face_v14s.onnx";
-
-class Stopwatch {
-public:
-    double LapMs() {
-        const auto now = std::chrono::steady_clock::now();
-        const double ms = std::chrono::duration<double, std::milli>(now - last_).count();
-        last_ = now;
-        return ms;
+static const char* Describe(ImageStatus status) {
+    switch (status) {
+    case ImageStatus::Ready: return "ready";
+    case ImageStatus::Unavailable: return "WIC is not available on this system";
+    case ImageStatus::OpenFailed: return "could not open the image";
+    case ImageStatus::DecodeFailed: return "could not decode the image";
+    case ImageStatus::ResizeFailed: return "could not resize the image";
+    case ImageStatus::WriteFailed: return "could not write the image";
     }
-
-private:
-    std::chrono::steady_clock::time_point last_ = std::chrono::steady_clock::now();
-};
-
-// Five stops of the inferno colour map, linearly interpolated.
-static void HeatColour(double t, double& r, double& g, double& b) {
-    static const double INFERNO[5][3] = {
-        {0.0015, 0.0005, 0.0139},
-        {0.3411, 0.0623, 0.4290},
-        {0.7355, 0.2155, 0.3303},
-        {0.9779, 0.5570, 0.0350},
-        {0.9884, 0.9984, 0.6449},
-    };
-    const double x = std::clamp(t, 0.0, 1.0) * 4.0;
-    const int i = std::min(int(x), 3);
-    const double f = x - i;
-    r = INFERNO[i][0] + (INFERNO[i + 1][0] - INFERNO[i][0]) * f;
-    g = INFERNO[i][1] + (INFERNO[i + 1][1] - INFERNO[i][1]) * f;
-    b = INFERNO[i][2] + (INFERNO[i + 1][2] - INFERNO[i][2]) * f;
+    return "unknown";
 }
 
-static RgbImage HeatImage(const Plane& total) {
-    RgbImage out{Plane(total.rows, total.cols), Plane(total.rows, total.cols),
-                 Plane(total.rows, total.cols)};
-    for (std::size_t i = 0; i < total.Size(); ++i)
-        HeatColour(total.v[i], out.r.v[i], out.g.v[i], out.b.v[i]);
-    return out;
-}
-
-static RgbImage GreyImage(const Plane& p) {
-    return RgbImage{p, p, p};
+static const char* Describe(FaceStatus status) {
+    switch (status) {
+    case FaceStatus::Ready: return "ready";
+    case FaceStatus::ModelMissing: return "model not found";
+    case FaceStatus::LoadFailed: return "model failed to load";
+    case FaceStatus::DetectFailed: return "detection failed";
+    }
+    return "unknown";
 }
 
 static void Paint(RgbImage& img, int r, int c, const double* rgb) {
@@ -84,7 +60,6 @@ static void Outline(RgbImage& img, const FaceBox& f) {
 static RgbImage OverlayImage(const RgbImage& picture, const SaliencyModel& model,
                              const std::vector<FaceBox>& faces) {
     const Plane& total = model.Total();
-    const std::vector<char>& top = model.Top();
     const FixationPoint& fix = model.Fixation();
     RgbImage out = HeatImage(total);
     for (std::size_t i = 0; i < total.Size(); ++i) {
@@ -96,15 +71,10 @@ static RgbImage OverlayImage(const RgbImage& picture, const SaliencyModel& model
     for (const FaceBox& f : faces) Outline(out, f);
 
     const int rows = total.rows, cols = total.cols;
-    for (int r = 0; r < rows; ++r) {
-        for (int c = 0; c < cols; ++c) {
-            const std::size_t i = std::size_t(r) * cols + c;
-            if (!top[i]) continue;
-            const bool edge = r == 0 || c == 0 || r == rows - 1 || c == cols - 1 ||
-                              !top[i - cols] || !top[i + cols] || !top[i - 1] || !top[i + 1];
-            if (edge) Paint(out, r, c, MARK);
-        }
-    }
+    const std::vector<char> edge = RegionEdge(model.Top(), rows, cols);
+    for (int r = 0; r < rows; ++r)
+        for (int c = 0; c < cols; ++c)
+            if (edge[std::size_t(r) * cols + c]) Paint(out, r, c, MARK);
 
     const int cr = int(fix.y * rows), cc = int(fix.x * cols);
     const int arm = std::max(rows, cols) / 40;
@@ -117,18 +87,6 @@ static RgbImage OverlayImage(const RgbImage& picture, const SaliencyModel& model
     return out;
 }
 
-static const char* Describe(ImageStatus status) {
-    switch (status) {
-    case ImageStatus::Ready: return "ready";
-    case ImageStatus::Unavailable: return "WIC is not available on this system";
-    case ImageStatus::OpenFailed: return "could not open the image";
-    case ImageStatus::DecodeFailed: return "could not decode the image";
-    case ImageStatus::ResizeFailed: return "could not resize the image";
-    case ImageStatus::WriteFailed: return "could not write the image";
-    }
-    return "unknown";
-}
-
 static bool Save(ImageCodec& codec, const std::filesystem::path& prefix, const wchar_t* suffix,
                  const RgbImage& img) {
     std::filesystem::path path = prefix;
@@ -138,23 +96,6 @@ static bool Save(ImageCodec& codec, const std::filesystem::path& prefix, const w
         return false;
     }
     return true;
-}
-
-// The build copies the model into models/ beside the executable.
-static std::wstring DefaultModelPath() {
-    wchar_t exe[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    return (std::filesystem::path(exe).parent_path() / L"models" / MODEL_NAME).wstring();
-}
-
-static const char* Describe(FaceStatus status) {
-    switch (status) {
-    case FaceStatus::Ready: return "ready";
-    case FaceStatus::ModelMissing: return "model not found";
-    case FaceStatus::LoadFailed: return "model failed to load";
-    case FaceStatus::DetectFailed: return "detection failed";
-    }
-    return "unknown";
 }
 
 int wmain(int argc, wchar_t** argv) {

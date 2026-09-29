@@ -11,7 +11,7 @@
 static const char* const CHANNEL_NAMES[ChannelCount] = {"contrast", "colour", "chroma", "face", "centre"};
 
 // A guess rather than a fit: nobody has eye-tracked these pictures.
-static const double DEFAULT_WEIGHTS[ChannelCount] = {1.0, 0.7, 0.4, 1.2, 0.3};
+static const double DEFAULT_WEIGHTS[ChannelCount] = {1.0, 0.4, 0.7, 1.2, 0.3};
 
 static const double SURROUND = 0.06;
 static const double CENTRE_SIGMA = 0.28;
