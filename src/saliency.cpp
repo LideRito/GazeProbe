@@ -22,23 +22,17 @@ static const double FLAT = 1e-4;
 static const double CLIP_LOW = 2.0;
 static const double CLIP_HIGH = 99.9;
 
-// Evenly spaced from 0 to 1 inclusive, with the last sample exactly 1.
+// Evenly spaced from 0 to 1 inclusive.
 static double UnitCoord(int i, int n) {
-    if (n == 1) return 0.0;
-    if (i == n - 1) return 1.0;
-    return i * (1.0 / (n - 1));
+    return n == 1 ? 0.0 : double(i) / (n - 1);
 }
 
-// Linear interpolation between order statistics, taken from the nearer one so both ends stay exact.
+// Linear interpolation between the two nearest order statistics, the usual definition of a percentile.
 static double Percentile(const std::vector<double>& sorted, double q) {
-    const std::size_t n = sorted.size();
-    const double position = double(n - 1) * (q / 100.0);
-    const double below = std::floor(position);
-    const std::size_t i0 = std::min(std::size_t(below), n - 1);
-    const std::size_t i1 = std::min(i0 + 1, n - 1);
-    const double t = position - below;
-    const double diff = sorted[i1] - sorted[i0];
-    return t >= 0.5 ? sorted[i1] - diff * (1.0 - t) : sorted[i0] + diff * t;
+    const double position = double(sorted.size() - 1) * (q / 100.0);
+    const std::size_t i0 = std::size_t(position);
+    const std::size_t i1 = std::min(i0 + 1, sorted.size() - 1);
+    return sorted[i0] + (sorted[i1] - sorted[i0]) * (position - double(i0));
 }
 
 static bool MinMax(const Plane& p, double& lo, double& hi) {
@@ -96,6 +90,7 @@ const char* ChannelName(Channel c) {
     return CHANNEL_NAMES[c];
 }
 
+// Local standard deviation of lightness, over a window 2% of the long edge.
 Plane ContrastChannel(const PreparedImage& img) {
     return LocalStd(img.L, WindowSize(img.Rows(), img.Cols()));
 }
@@ -111,6 +106,7 @@ Plane ColourChannel(const PreparedImage& img) {
     return out;
 }
 
+// Chroma is the distance from the grey axis in the (a, b) plane.
 Plane ChromaChannel(const PreparedImage& img) {
     Plane out(img.Rows(), img.Cols());
     for (std::size_t i = 0; i < out.Size(); ++i) out.v[i] = std::hypot(img.a.v[i], img.b.v[i]);
@@ -148,6 +144,7 @@ Plane CentreChannel(int rows, int cols) {
     return out;
 }
 
+// Maps the 2nd to 99.9th percentile onto [0, 1], so channels with different units can be summed.
 Plane Stretch(const Plane& raw) {
     Plane out(raw.rows, raw.cols);
     std::vector<double> values = raw.v;
@@ -166,6 +163,7 @@ Plane Stretch(const Plane& raw) {
     return out;
 }
 
+// The top tenth of the value range, which is not the same as the brightest tenth of the pixels.
 double TopLevel(const Plane& total) {
     double lo = 0.0, hi = 0.0;
     MinMax(total, lo, hi);
@@ -173,40 +171,34 @@ double TopLevel(const Plane& total) {
 }
 
 std::vector<char> TopRegion(const Plane& total) {
-    std::vector<char> top(total.Size(), 0);
-    double lo = 0.0, hi = 0.0;
-    if (!MinMax(total, lo, hi) || hi <= 0.0) return top;
     const double level = TopLevel(total);
-    for (std::size_t i = 0; i < total.Size(); ++i) top[i] = total.v[i] >= level;
+    std::vector<char> top(total.Size());
+    // Only positive pixels count, so a blank total has no region rather than one covering everything.
+    for (std::size_t i = 0; i < total.Size(); ++i) top[i] = total.v[i] >= level && total.v[i] > 0.0;
     return top;
 }
 
 FixationPoint FindFixation(const Plane& total, const std::vector<char>& top) {
-    FixationPoint f;
-    if (std::find(top.begin(), top.end(), char(1)) == top.end()) return f;
-
-    // One peak, not the average of all of them: two faces would centroid into the gap between.
     std::vector<int> labels;
     const int count = LabelComponents(top, total.rows, total.cols, labels);
-    int keep = 0;
-    if (count > 1) {
-        std::vector<double> mass(count + 1, 0.0);
-        for (std::size_t i = 0; i < labels.size(); ++i)
-            if (labels[i]) mass[labels[i]] += total.v[i];
-        keep = int(std::max_element(mass.begin() + 1, mass.end()) - mass.begin());
-    }
+    if (count == 0) return FixationPoint();
+
+    // One peak, not the average of all of them: two faces would centroid into the gap between.
+    std::vector<double> mass(count + 1, 0.0);
+    for (std::size_t i = 0; i < labels.size(); ++i) mass[labels[i]] += total.v[i];
+    const int keep = int(std::max_element(mass.begin() + 1, mass.end()) - mass.begin());
 
     double sum = 0.0, sumX = 0.0, sumY = 0.0;
-    for (std::size_t i = 0; i < top.size(); ++i) {
-        if (!top[i] || (keep && labels[i] != keep)) continue;
-        const double w = total.v[i];
-        sum += w;
-        sumX += double(i % std::size_t(total.cols)) * w;
-        sumY += double(i / std::size_t(total.cols)) * w;
+    for (int r = 0; r < total.rows; ++r) {
+        for (int c = 0; c < total.cols; ++c) {
+            if (labels[std::size_t(r) * total.cols + c] != keep) continue;
+            const double w = total.At(r, c);
+            sum += w;
+            sumX += c * w;
+            sumY += r * w;
+        }
     }
-    f.x = sumX / sum / total.cols;
-    f.y = sumY / sum / total.rows;
-    return f;
+    return {sumX / sum / total.cols, sumY / sum / total.rows};
 }
 
 SaliencyModel::SaliencyModel() {

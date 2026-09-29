@@ -6,18 +6,19 @@
 #include <wincodec.h>
 #include <wrl/client.h>
 
-#include "pixel_utils.h"
-
 #include <algorithm>
 #include <cstdio>
 #include <vector>
 
+#include "pixel_utils.h"
+
 using Microsoft::WRL::ComPtr;
 
-static std::string Failure(const char* what, HRESULT hr) {
+static bool Fail(std::string& error, const char* what, HRESULT hr) {
     char text[96];
     std::snprintf(text, sizeof text, "%s failed (0x%08lX)", what, static_cast<unsigned long>(hr));
-    return text;
+    error = text;
+    return false;
 }
 
 // Straight (not premultiplied) alpha, composited over a white background.
@@ -71,28 +72,25 @@ bool ImageCodec::Load(const std::wstring& path, int longEdge, RgbImage& out, std
     }
 
     HRESULT hr = S_OK;
-    auto fail = [&](const char* what) {
-        error = Failure(what, hr);
-        return false;
-    };
 
     ComPtr<IWICBitmapDecoder> decoder;
     hr = factory_->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
                                              WICDecodeMetadataCacheOnDemand, &decoder);
-    if (FAILED(hr)) return fail("opening the image");
+    if (FAILED(hr)) return Fail(error, "opening the image", hr);
 
     ComPtr<IWICBitmapFrameDecode> frame;
-    if (FAILED(hr = decoder->GetFrame(0, &frame))) return fail("reading a frame");
+    if (FAILED(hr = decoder->GetFrame(0, &frame))) return Fail(error, "reading a frame", hr);
 
     ComPtr<IWICFormatConverter> converter;
-    if (FAILED(hr = factory_->CreateFormatConverter(&converter))) return fail("creating a converter");
+    if (FAILED(hr = factory_->CreateFormatConverter(&converter)))
+        return Fail(error, "creating a converter", hr);
     hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone,
                                nullptr, 0.0, WICBitmapPaletteTypeCustom);
-    if (FAILED(hr)) return fail("converting to BGRA");
+    if (FAILED(hr)) return Fail(error, "converting to BGRA", hr);
 
     std::vector<BYTE> px;
     int w = 0, h = 0;
-    if (FAILED(hr = CopyBgra(converter.Get(), px, w, h))) return fail("copying pixels");
+    if (FAILED(hr = CopyBgra(converter.Get(), px, w, h))) return Fail(error, "copying pixels", hr);
 
     const double scale = double(longEdge) / std::max(w, h);
     if (scale < 1.0) {
@@ -101,15 +99,15 @@ bool ImageCodec::Load(const std::wstring& path, int longEdge, RgbImage& out, std
         ComPtr<IWICBitmap> bitmap;
         hr = factory_->CreateBitmapFromMemory(UINT(w), UINT(h), GUID_WICPixelFormat32bppBGRA,
                                               UINT(w) * 4, UINT(px.size()), px.data(), &bitmap);
-        if (FAILED(hr)) return fail("wrapping the pixels");
+        if (FAILED(hr)) return Fail(error, "wrapping the pixels", hr);
 
         const int nw = ScaledSize(w, scale);
         const int nh = ScaledSize(h, scale);
         ComPtr<IWICBitmapScaler> scaler;
-        if (FAILED(hr = factory_->CreateBitmapScaler(&scaler))) return fail("creating a scaler");
+        if (FAILED(hr = factory_->CreateBitmapScaler(&scaler))) return Fail(error, "creating a scaler", hr);
         hr = scaler->Initialize(bitmap.Get(), UINT(nw), UINT(nh), WICBitmapInterpolationModeHighQualityCubic);
-        if (FAILED(hr)) return fail("setting up the resize");
-        if (FAILED(hr = CopyBgra(scaler.Get(), px, w, h))) return fail("resizing");
+        if (FAILED(hr)) return Fail(error, "setting up the resize", hr);
+        if (FAILED(hr = CopyBgra(scaler.Get(), px, w, h))) return Fail(error, "resizing", hr);
     }
 
     out = PlanesFromBgra(px, w, h);
@@ -130,35 +128,31 @@ bool ImageCodec::SavePng(const std::wstring& path, const RgbImage& img, std::str
     }
 
     HRESULT hr = S_OK;
-    auto fail = [&](const char* what) {
-        error = Failure(what, hr);
-        return false;
-    };
 
     ComPtr<IWICStream> stream;
-    if (FAILED(hr = factory_->CreateStream(&stream))) return fail("creating a stream");
+    if (FAILED(hr = factory_->CreateStream(&stream))) return Fail(error, "creating a stream", hr);
     if (FAILED(hr = stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE)))
-        return fail("creating the file");
+        return Fail(error, "creating the file", hr);
 
     ComPtr<IWICBitmapEncoder> encoder;
     if (FAILED(hr = factory_->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)))
-        return fail("creating the encoder");
+        return Fail(error, "creating the encoder", hr);
     if (FAILED(hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache)))
-        return fail("starting the encoder");
+        return Fail(error, "starting the encoder", hr);
 
     ComPtr<IWICBitmapFrameEncode> frame;
-    if (FAILED(hr = encoder->CreateNewFrame(&frame, nullptr))) return fail("adding a frame");
-    if (FAILED(hr = frame->Initialize(nullptr))) return fail("starting the frame");
-    if (FAILED(hr = frame->SetSize(UINT(w), UINT(h)))) return fail("setting the size");
+    if (FAILED(hr = encoder->CreateNewFrame(&frame, nullptr))) return Fail(error, "adding a frame", hr);
+    if (FAILED(hr = frame->Initialize(nullptr))) return Fail(error, "starting the frame", hr);
+    if (FAILED(hr = frame->SetSize(UINT(w), UINT(h)))) return Fail(error, "setting the size", hr);
     WICPixelFormatGUID format = GUID_WICPixelFormat24bppBGR;
-    if (FAILED(hr = frame->SetPixelFormat(&format))) return fail("setting the pixel format");
+    if (FAILED(hr = frame->SetPixelFormat(&format))) return Fail(error, "setting the pixel format", hr);
     if (format != GUID_WICPixelFormat24bppBGR) {
         error = "the PNG encoder refused 24-bit BGR";
         return false;
     }
     hr = frame->WritePixels(UINT(h), UINT(w) * 3, UINT(px.size()), px.data());
-    if (FAILED(hr)) return fail("writing pixels");
-    if (FAILED(hr = frame->Commit())) return fail("finishing the frame");
-    if (FAILED(hr = encoder->Commit())) return fail("finishing the file");
+    if (FAILED(hr)) return Fail(error, "writing pixels", hr);
+    if (FAILED(hr = frame->Commit())) return Fail(error, "finishing the frame", hr);
+    if (FAILED(hr = encoder->Commit())) return Fail(error, "finishing the file", hr);
     return true;
 }

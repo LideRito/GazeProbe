@@ -18,6 +18,7 @@ struct Candidate {
     float x, y, w, h, score;
 };
 
+// Intersection over union: the area two boxes share, as a fraction of the area they cover together.
 static float Iou(const Candidate& a, const Candidate& b) {
     const double x1 = std::max<double>(a.x, b.x), y1 = std::max<double>(a.y, b.y);
     const double x2 = std::min<double>(a.x + a.w, b.x + b.w), y2 = std::min<double>(a.y + a.h, b.y + b.h);
@@ -52,7 +53,7 @@ std::vector<FaceBox> DecodeDetections(const float* output, int count, double sca
     std::vector<Candidate> found;
     for (int i = 0; i < count; ++i) {
         const float score = output[4 * count + i];
-        if (!(score > MIN_CONFIDENCE)) continue;
+        if (score <= MIN_CONFIDENCE) continue;
         const float w = output[2 * count + i] / s;
         const float h = output[3 * count + i] / s;
         found.push_back({output[i] / s - w / 2, output[count + i] / s - h / 2, w, h, score});
@@ -60,7 +61,7 @@ std::vector<FaceBox> DecodeDetections(const float* output, int count, double sca
     std::stable_sort(found.begin(), found.end(),
                      [](const Candidate& a, const Candidate& b) { return a.score > b.score; });
 
-    // The network fires on many overlapping anchors per face; keep the strongest and drop what overlaps it.
+    // Non-maximum suppression: the network fires on many overlapping anchors per face, so keep the strongest.
     std::vector<Candidate> kept;
     for (const Candidate& c : found) {
         bool overlaps = false;

@@ -147,6 +147,8 @@ static const char* Describe(FaceStatus status) {
 }
 
 int wmain(int argc, wchar_t** argv) {
+    // Paths and error texts are printed as UTF-8, which a Chinese or Japanese console would otherwise misread.
+    SetConsoleOutputCP(CP_UTF8);
     std::vector<std::wstring> positional;
     std::wstring modelPath = DefaultModelPath();
     for (int i = 1; i < argc; ++i) {
