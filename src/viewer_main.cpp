@@ -40,14 +40,20 @@ static LRESULT WINAPI WindowProc(HWND window, UINT msg, WPARAM wParam, LPARAM lP
     return DefWindowProcW(window, msg, wParam, lParam);
 }
 
-// A system font with Japanese and Chinese glyphs, so file names in either script show; else ImGui's own.
+// A Japanese system font for the interface; without any system font ImGui falls back to its own.
 static void LoadFont(ImGuiIO& io) {
     wchar_t windows[MAX_PATH] = {};
     GetWindowsDirectoryW(windows, MAX_PATH);
-    for (const wchar_t* name : {L"meiryo.ttc", L"YuGothM.ttc", L"msyh.ttc"}) {
-        const std::filesystem::path font = std::filesystem::path(windows) / L"Fonts" / name;
-        if (std::filesystem::exists(font) && io.Fonts->AddFontFromFileTTF(font.u8string().c_str())) return;
-    }
+    const std::filesystem::path fonts = std::filesystem::path(windows) / L"Fonts";
+    ImFontConfig config;
+    auto add = [&](const wchar_t* name) {
+        const std::filesystem::path font = fonts / name;
+        return std::filesystem::exists(font) &&
+               io.Fonts->AddFontFromFileTTF(font.u8string().c_str(), 0.0f, &config) != nullptr;
+    };
+    if (add(L"meiryo.ttc") || add(L"YuGothM.ttc")) config.MergeMode = true;
+    // Meiryo and Yu Gothic lack simplified Chinese, so file names in it borrow Microsoft YaHei's glyphs.
+    add(L"msyh.ttc");
 }
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {

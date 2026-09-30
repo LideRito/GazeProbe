@@ -56,7 +56,7 @@ static void Outline(RgbImage& img, const FaceBox& f) {
     }
 }
 
-// The picture under the heat map, the detected faces, the edge of the top tenth, and a cross on the fixation.
+// The picture under the heat map, the detected faces, the edge of the top region, and a cross on the fixation.
 static RgbImage OverlayImage(const RgbImage& picture, const SaliencyModel& model,
                              const std::vector<FaceBox>& faces) {
     const Plane& total = model.Total();
@@ -151,10 +151,10 @@ int wmain(int argc, wchar_t** argv) {
     }
     std::printf("fixation   x %.4f  y %.4f   (pixel %d, %d)\n", fix.x, fix.y,
                 int(fix.x * img.Cols()), int(fix.y * img.Rows()));
-    std::printf("\n%-10s %8s %10s %12s\n", "channel", "weight", "overall", "in top 10%");
+    std::printf("\n%-10s %8s %10s %14s\n", "channel", "weight", "overall", "in top region");
     for (int c = 0; c < ChannelCount; ++c) {
         const Channel ch = Channel(c);
-        std::printf("%-10s %8.2f %9.1f%% %11.1f%%\n", ChannelName(ch), model.Weight(ch),
+        std::printf("%-10s %8.2f %9.1f%% %13.1f%%\n", ChannelName(ch), model.Weight(ch),
                     100.0 * model.Share(ch), 100.0 * model.TopShare(ch));
     }
     std::printf("\nload %.1f ms   oklab %.1f ms   face model %.1f ms   faces %.1f ms   saliency %.1f ms\n",
