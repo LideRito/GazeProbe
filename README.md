@@ -113,4 +113,4 @@ gazeprobe <画像> [出力プレフィックス] [--model <顔検出モデル.on
 
 ---
 
-UI、テスト（`tests/`）、README は Claude Code を使用して作成しました。
+UI、テスト（`tests/`）、README は Claude Code の支援を受けて作成しました。コードレビューでは、Claude Code に疑わしい箇所を挙げさせ、それをもとに確認しました。
